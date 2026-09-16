@@ -79,9 +79,13 @@ Devin CLI のhooks機構（Claude Code互換）で exec/write_to_process の
 | 純粋な時間潰し（`sleep N`単体/no-op付き、N≥5） | BLOCK |
 | `sleep 20m` / `sleep 1h`（単位サフィックス） | BLOCK |
 | `time.sleep(300)`（python回避） | BLOCK |
-| `until/while/for ... do sleep N; done` 内 | ALLOW |
-| python `while/for` ループ内の `time.sleep` | ALLOW |
+| `until/while/for ... do sleep N; done` 内 | ALLOW ※ |
+| python `while/for` ループ内の `time.sleep` | ALLOW ※ |
 | 短いsleep（<15）+ 実コマンド | ALLOW |
+
+※ 2026-09-16 強化: `for` ループは `break`/`exit`/`return` を含む場合のみ ALLOW。
+固定リストを回る for は条件脱出しないため、break無しは盲目ポーリングと同じ
+（下記「追記(2026-09-16)」参照）。
 
 ブロック時は理由と代替手段をエージェントに返す（`decision: block` + exit 2）。
 単に止めるのではなく正しい待ち方に誘導する。
@@ -157,3 +161,41 @@ npx wait-on tcp:<port>
 - sleep秒数分布の詳細・オーケストレーション統計は分析セッションの
   `sessions-analysis.html` を参照
 - heartbeat送信実績: 176回（AGENTS.md改善前は28回）、ask使用: 0回
+
+## 追記(2026-09-16): DB A 再測定と新バリアント
+
+同一DB（195セッション/24h）を exec コマンド内のリテラル `sleep N` のみで再集計:
+**439箇所・累計5.85時間**（初回の975回/15.4hはループ展開回数込みの推定実行回数。
+計測方法の差であり、パターンの性質は一致）。
+
+新たに観測したバリアント:
+
+| 形 | 規模 | 問題 |
+|---|---|---|
+| `for i in $(seq 1 120); do <poll>; sleep 60; done`（**break無し**） | 4コマンド・worst計6.3h | 結果が到着しても全120回実行。sleep 90×60回=5,400s の個体も。旧フックの「ループ内sleep許容」を素通り |
+| `sleep 45〜100 && cat/for /tmp/agy-*.json` | 22コマンド・13セッション | 外部エージェントCLI（`agy`、全555呼出/77セッション）の完了を固定sleepで推測待ち |
+| `sleep 3 && orca orchestration check --wait …` | 2件 | `--wait` がブロッキングなのに手前でsleep。冗長 |
+| `sleep 60`/`120` 単体ターン | 複数 | 純粋な時間潰し（既存フックのブロック対象） |
+
+### 対照: 同一状況の良いパターンが1件だけ存在
+
+| | 形 |
+|---|---|
+| ❌ 13セッション | `sleep 60; for f in /tmp/agy_*.json; do cat …` — 固定時間後に一括読み |
+| ✅ 1セッション | `while [ ! -s /tmp/agy_x.json ] …; do sleep 15; done` — ファイル出現を条件待ち |
+
+外部エージェント呼出は同期的なので、本来は「そのまま実行→execの
+バックグラウンド化+`get_output`」か `wait-for 'test -s out.json'` で足りる。
+固定sleepは「agyが遅いかも」という推測の先延ばし。
+
+### 対応
+
+`no_blind_sleep.py` のループ判定を強化済み:
+`for ... done` 内の sleep はコマンド内に `break`/`exit`/`return` が
+ある場合のみ許容（python `time.sleep` の `for` も同様）。
+`while`/`until`（条件が先頭にある）と `while true`（永久デーモン=
+heartbeatループ等の仕様パターン）は従来通り許容。
+
+残る課題: `for` 内sleepを一律厳格化したため、`for f in files; do 実処理;
+sleep 60; done` 型のペーシングは誤ブロックされうる（低頻度と判断）。
+本当のペーシングが必要なら `wait-for --interval` 側で吸収する想定。

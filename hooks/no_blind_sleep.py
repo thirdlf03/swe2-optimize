@@ -8,8 +8,12 @@
 Policy:
   - `sleep N` (N >= 15) outside a condition loop          -> BLOCK
   - pure time-wasting (`sleep N` alone / with no-ops, N>=5) -> BLOCK
-  - sleep inside `until|while|for ... done` loop           -> ALLOW
+  - sleep inside `until|while ... done` loop               -> ALLOW
     (the sleep is the poll interval of a condition wait)
+  - sleep inside `for ... done` loop                       -> ALLOW only if the
+    command also contains `break`/`exit`/`return` — a `for` loop iterates a
+    fixed list, so without an early exit it is a blind poll that runs all N
+    iterations regardless of when the awaited event arrives
   - short sleeps (< 15) alongside a real command           -> ALLOW
 
 On block, prints a JSON decision + reason on stdout and the reason on
@@ -23,8 +27,12 @@ MIN_BLOCK_S = 15.0
 WASTE_MIN_S = 5.0
 
 # loop keywords only count in command position (start or after ; & | ( { ' " do)
-LOOP_OPEN = re.compile(r"(?:^|[;&|({\"'\n]|&&|\|\||\bdo\b)\s*(?:until|while|for)\b")
+LOOP_TOK = re.compile(
+    r"(?:^|[;&|({\"'\n]|&&|\|\||\bdo\b)\s*(until|while|for)\b"
+    r"|(?:^|[;&|)}\"'\n]|&&|\|\|)\s*done\b"
+)
 LOOP_CLOSE = re.compile(r"(?:^|[;&|)}\"'\n]|&&|\|\|)\s*done\b")
+BREAK_RE = re.compile(r"\b(?:break|exit|return)\b")
 SLEEP_RE = re.compile(r"\bsleep\s+([0-9]+(?:\.[0-9]+)?)([smhd])?\b")
 PY_SLEEP_RE = re.compile(r"\btime\.sleep\s*\(\s*([0-9]+(?:\.[0-9]+)?)\s*\)")
 UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
@@ -40,20 +48,36 @@ Wait on a CONDITION instead:
   ssh <host> 'until <remote-check>; do sleep 30; done'   # push the wait remote-side
   npx wait-on tcp:<port>                        # dev-server readiness
   wait-for '<check-cmd>' [--interval N] [--timeout N]   # ~/.local/bin/wait-for
-Rule: sleep is only allowed as the interval INSIDE an until/while/for loop."""
+Rule: sleep is only allowed as the interval INSIDE an until/while loop —
+or inside a `for` loop that can early-exit via break/exit/return."""
 
 
-PY_LOOP = re.compile(r"(?m)^\s*(?:while|for)\b")
+PY_LOOP = re.compile(r"(?m)^\s*(while|for)\b")
+PY_BREAK = re.compile(r"\b(?:break|exit|return|sys\.exit)\b")
 
 
 def in_condition_loop(cmd: str, pos: int, shell: bool = True) -> bool:
     before = cmd[:pos]
     if not shell:
-        # python: a preceding while/for line means the sleep is loop-bound
+        # python: a preceding while/for line means the sleep is loop-bound.
+        # `for` iterates a fixed collection: without break/exit/return the
+        # sleep is a blind fixed-count poll, not a condition wait.
+        if "for" in PY_LOOP.findall(before) and not PY_BREAK.search(cmd):
+            return False
         return bool(PY_LOOP.search(before))
-    opens = len(LOOP_OPEN.findall(before))
-    closes = len(LOOP_CLOSE.findall(before))
-    return opens > closes and bool(LOOP_CLOSE.search(cmd[pos:]))
+    stack = []
+    for m in LOOP_TOK.finditer(before):
+        t = m.group(1)
+        if t is None:
+            if stack:
+                stack.pop()
+        else:
+            stack.append(t)
+    if not stack or not LOOP_CLOSE.search(cmd[pos:]):
+        return False
+    if "for" in stack and not BREAK_RE.search(cmd):
+        return False
+    return True
 
 
 def main() -> None:
