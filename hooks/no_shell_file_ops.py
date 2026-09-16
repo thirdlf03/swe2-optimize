@@ -21,6 +21,13 @@ Allowed (not flagged):
   - segments containing `$var`/backticks — tools can't take shell expansions
   - `cd` alone (persistent-shell navigation), `(cd dir && cmd)` subshells,
     `cd` inside loops, mid-command `cd` after the first segment
+  - capability gaps the dedicated tools cannot express:
+    `find` with predicates beyond name/type matching (`-newermt` and other
+    time predicates, `-size`, `-perm`, `-empty`, `-exec`, `-delete`,
+    `-prune`, `-printf`, `-regex`, `-type d|l|...` non-file types, ...)
+    and grep-family flags for binary/multiline/PCRE/extract searches
+    (`-a`/`--text`, `-U`/`--multiline`, `-P`/`--pcre2`, `-z`/`--null-data`,
+    `-o`/`--only-matching`, `--byte-offset`)
 
 On block, prints a JSON decision + reason on stdout and the reason on
 stderr, then exits 2 (covers both JSON-decision and exit-code semantics).
@@ -37,6 +44,62 @@ DYNAMIC_RE = re.compile(r"[$`]")
 GLOB_RE = re.compile(r"[*?[]")
 GREP_RE = re.compile(r"^(?:e?grep|fgrep|rg)\b")
 FIND_RE = re.compile(r"^find\b")
+
+# find predicates the glob-based find_file_by_name tool cannot express
+FIND_CAPS = {
+    "-newer", "-anewer", "-cnewer", "-mtime", "-atime", "-ctime", "-Btime",
+    "-mmin", "-amin", "-cmin", "-Bmin", "-perm", "-size", "-empty",
+    "-delete", "-exec", "-execdir", "-ok", "-okdir", "-prune", "-printf",
+    "-fprintf", "-ls", "-regex", "-iregex", "-xdev", "-mount", "-links",
+    "-user", "-nouser", "-group", "-nogroup", "-inum", "-samefile",
+    "-readable", "-writable", "-executable", "-used", "-quit", "-depth",
+}
+FIND_CAPS_PREFIX = ("-newer", "-anewer", "-cnewer")  # -newermt, -newerXt ...
+# grep-family short-flag chars / long flags the dedicated grep tool lacks
+GREP_CAP_CHARS = set("aUPzo")
+GREP_CAP_LONG = {
+    "--text", "--binary", "--multiline", "--pcre2", "--null-data",
+    "--null", "--only-matching", "--byte-offset",
+}
+
+
+def tokens_outside_quotes(s: str):
+    toks, cur, q = [], [], None
+    for ch in s:
+        if q:
+            if ch == q:
+                q = None
+        elif ch in "\"'":
+            q = ch
+        elif ch.isspace():
+            if cur:
+                toks.append("".join(cur))
+                cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        toks.append("".join(cur))
+    return toks
+
+
+def find_has_capability_gap(st2: str) -> bool:
+    toks = tokens_outside_quotes(st2)
+    for i, t in enumerate(toks):
+        if t in FIND_CAPS or t.startswith(FIND_CAPS_PREFIX):
+            return True
+        if t == "-type" and i + 1 < len(toks) and toks[i + 1] != "f":
+            return True
+    return False
+
+
+def grep_has_capability_gap(st2: str) -> bool:
+    for t in tokens_outside_quotes(st2):
+        if t in GREP_CAP_LONG:
+            return True
+        if t.startswith("-") and not t.startswith("--") and len(t) > 1:
+            if any(c in GREP_CAP_CHARS for c in t[1:]):
+                return True
+    return False
 CAT_RE = re.compile(r"^cat\b")
 HT_RE = re.compile(r"^(head|tail)\b")
 CD_RE = re.compile(r"^cd\s+(\S+)\s*$")
@@ -155,9 +218,11 @@ def classify(cmd: str):
         if DYNAMIC_RE.search(st2):
             continue
         if GREP_RE.match(st2):
-            hits.append(("grep", st2[:60]))
+            if not grep_has_capability_gap(st2):
+                hits.append(("grep", st2[:60]))
         elif FIND_RE.match(st2):
-            hits.append(("find", st2[:60]))
+            if not find_has_capability_gap(st2):
+                hits.append(("find", st2[:60]))
         elif CAT_RE.match(st2):
             rest = st2[3:].strip()
             if (
