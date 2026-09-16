@@ -25,6 +25,7 @@ tools/   セッション分析用スクリプト（transcripts → digest集計�
 | コンテキスト汚染（スキル重複登録・ルール競合・多重注入） | [docs/env-hardening.md](docs/env-hardening.md) | `read_config_from` 遮断 + スキル正本化（実施済み） |
 | SWE-2の行動特性（強み/弱みの基礎データ） | [docs/swe2-characteristics.md](docs/swe2-characteristics.md) + [tier別詳細](docs/swe2-characteristics/) | —（基礎データ。サブエージェントプロファイル使い分けは試行のうえ廃止 2026-09-16） |
 | コンテキストコスト（prefixキャッシュ全滅152回・10.4M tok再処理） | [docs/context-cost.md](docs/context-cost.md) | [tools/cache_miss.py](tools/cache_miss.py)（計測）＋エージェント側緩和策をdocに記載 |
+| 専用ツールのバイパス（execの49%がshell経由ファイル操作。ルール注入済みでもgrep 4.7倍・find 40倍） | [docs/shell-file-ops.md](docs/shell-file-ops.md) | [hooks/no_shell_file_ops.py](hooks/no_shell_file_ops.py) |
 
 ## tools/
 
