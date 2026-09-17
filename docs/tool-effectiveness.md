@@ -120,3 +120,129 @@ no_shell_file_ops = 09-16 23:54、orch 実運用開始 = 09-17 00:06頃。
   品質向上の一般化には追加Runが必要。
 - フック未適用の write_to_process / subagent 内 exec など
   素通り経路は別途棚卸しが必要。
+
+---
+
+# 追記 (2026-09-17 夜): 定常運用23h + 大規模Run後の再測定
+
+前回は「導入後 ~4時間・30セッション・半数が開発スモーク」だった。
+本追記は **導入後23.2h・100セッション**(内60+が本番ギャラリー制作Run
+のワーカー)まで広げた再測定 + 大規模オーケストレーションで初めて
+表面化した失敗パターンの記録。
+
+計測方法変更: transcripts は ~100件でローテートされるため古いものが
+消えた。今回は `sessions.db` の `tool_call_state`(全186セッション・
+15,715 call の rawInput + status)を直接分類。ブロックは
+`tool_call_update_json` の `Tool rejected` で識別し、**未遂(ブロック)と
+実行を分離**した(前回の transcript 側カウントは未遂込みだった点に注意)。
+
+## セッション構造の変化(観測)
+
+| 期間 | セッション | tool calls | 内訳 |
+|---|---|---|---|
+| 導入前 (09-11〜16, 151.5h) | 96 | 6,866 | ほぼ対話型 + 初期orcaワーカー19 |
+| 導入後 (09-16 23:54〜, 23.2h) | 100 | 8,849 | 対話19(内spawn失敗stub等数件) + coordinator9 + ワーカー62 + integ/review10 |
+
+- 09-17 単日で 98セッション・8,795 call。従来の最多日(09-14 の2,448 call)の **3.6倍**。
+- `run_subagent` は導入前91回 → 導入後 **0回**。組込みサブエージェントは
+  orca ワーカーに完全に置き換わった。
+- ワーカー実績: 所要時間 median 49分(mean 59分・最大174分)、
+  tool calls median 92。
+
+## hooks 再測定(導入後全100セッション)
+
+| 指標 | 実測 |
+|---|---|
+| blind sleep **実行** | **0回**(未遂12回は全てブロック) |
+| fileop違反 **実行** | 29回(下記fork由来28 + 境界1) → 通常セッションでは実質0 |
+| fileop ブロック | **296回 / 90セッション**(1セッションあたり平均~3.3回) |
+| sleep ブロック | 12回 |
+| ブロック後の回復 | 全件 1ステップで専用ツール/workdir引数に置換(transcript確認) |
+
+### 新規の構造的発見: fork は親セッションのhookスナップショットを継承する
+
+`kind-pangolin`(00:30 開始・hook登録済み期間)で `cd &&` 28回が
+**ブロックされず実行**された。一方同セッションでは `sleep 20` が正しく
+ブロックされている。親 `melodic-scent` は 23:19 開始 =
+sleep hook(22:47)登録後・fileop hook(23:54)登録前。
+
+> fork で作られたセッションは、作成時点の config でなく
+> **親セッション作成時点のhookセットを引き継ぐ**。
+> 「既存セッションに遡及しない」だけでなく、**古い親からforkした
+> 新セッションにも新hookは届かない**。
+> (推測: 親子リンクはDB上確認できず、時系列とブロック挙動からの推定)
+
+その他の素通り経路棚卸し(post期): `write_to_process` 2回のみ、
+run_subagent 0回 — 現状の迂回面は小さい。
+
+## 大規模Runの観測 (3Dギャラリー制作Run, 03:21〜19:20)
+
+要件投入 → 作品20本並列ワーカー ×2波 + 調査/ドシエ/ペルソナ/審査員4人/
+集約/統合/監査まで、人手は要件投入と途中の対話質問のみ。
+
+**良かった点(観測)**
+
+- コーディネーターの待機が完全にイベント駆動化: `orch wait` 19回・
+  `orchestration check --wait` 23回 + `get_output` ブロッキング読み。
+  sleepポーリングなしで16hパイプラインを回した。
+- ワーカーの自己検証が orca ブラウザ前提の形に定着:
+  `orca eval` 328回(ページ内JSで物理シミュレーション数百tickの
+  ストレステスト等)、`orca screenshot`+画像read 112回、
+  `orca console` でコンソールエラー点検、typecheck/build 後に
+  commit → `orchestration send` で進捗/worker_done 報告169回。
+- コーディネーター側も検証を握る: 統合後に自分で typecheck/build、
+  全40ルートのスクリーンショット sweep、採点表の算術検証スクリプト、
+  「コミット忘れ」「誤spec」などワーカー異常を検出→処置できていた。
+- `worker_done` → adopt → integrate → reviewer監査 → main merge の
+  全工程が hooks と両立して完走。成果物は Cloudflare に deploy 済み。
+
+**新しく表面化した失敗パターン(実測)**
+
+| # | 事象 | 実測 |
+|---|---|---|
+| A | coordinator が書いた bash ループの `declare -A` が macOS bash 3.2 で不発 → task↔model マップ崩壊 | w21 に作品40のspecが混入(誤作品を構築・respawn必要) + spawn storm |
+| B | 短間隔連続 spawn → `worker-start failed: null` 多発 | 失敗ごとに worktree/branch が残留し 17 stale worktrees・62 stale branches。手動清掃が必要に |
+| C | `ORCH_ALLOW` がバックグラウンドシェルに引き継がれず max モデル spawn が拒否 | 3ワーカー + w40 が連続失敗(4回リトライで stale branch×4) |
+| D | `orchestration check --wait` が未ackメッセージを再配信し続ける | coordinator が ~4ステップを `--ack` 発見に消費 |
+| E | ワーカーのコミット忘れ | 2件(scored.md 群、AUDIT.md)。coordinator が代行コミット |
+| F | spawn 直後に動かない stub/ゾンビセッション | `volcano-slayer`(coordinator spawn・18msg・0 call)、`plural-money`(pre期・732min・0 call) |
+| G | ブロック往復の定常コスト | 296 fileop + 12 sleep ブロック ≒ 308ステップ/23h。セッションごとに hook が教え直す構造(ワーカー量産で線形に増える) |
+| H | coordinator モデル配分の揺れ | ガイドラインは coordinator=high だが実運用の2セッションは swe-2-max で起動 |
+
+## 根本原因メモ(追記分)
+
+- Aは「コーディネーターの shell 依存スクリプト」という実行基盤の脆さ。
+  bash 3.2 縛りは macOS 固有だが、**map構造を shell で持つ設計自体**が
+  spec混入の遠因。ハーネス側で task→model 割当を持てば防げる。
+- B/Cは spawn が「失敗しても副作用(worktree)を残し、エラーも
+  `failed: null` と情報量ゼロ」という API 設計由来。レート制御・
+  冪等性・stale掃除は harness 責務にすべき。
+- Dは ack が「存在するが文書化・自動化されていない」プリミティブ欠落。
+- Gは強制力のある仕組み(hook)と学習がセッション単位でリセットされる
+  構造の衝突。**ルールを worker spec/playbook にも書けば初手から
+  避けられる**はず(未検証)。
+
+## 対策(追記分)
+
+| 事象 | 対策案 | 状態 |
+|---|---|---|
+| G 毎セッション教え直し | orch のワーカーspecテンプレに「専用ツール使用・`cd DIR&&`禁止(workdir引数を使え)」を定型句として注入。ブロック数を /10 級に減らせる見込み | 未実装・効果は次回Runで測定 |
+| B spawn storm + 残骸 | orch spawn に直列化+rate limitと、失敗時の stale worktree/branch 自動回収を入れる | 未実装 |
+| A bash 3.2 | playbook/coordinator向け注意に「macOS bash 3.2・連想配列不可。mapは spec ファイルか python で」と明記 | 未実装・文書で可 |
+| C ORCH_ALLOW 喪失 | spawn 呼出を env 直書きでなく orch 側でモデル許可を保持する設計に | 未実装 |
+| D ack 未配送 | orchestration スキル/playbook に ack 手順を記載、または check --wait の auto-ack オプション | 未実装 |
+| E コミット忘れ | worker spec に「worker_done 前に全成果物を commit」を定型句化 + `orch adopt` が dirty worktree を検出警告 | 未実装 |
+| F ゾンビ | `orch status` が「spawn済み・0 tool calls・X分経過」を異常として報告 | 未実装 |
+| fork のhook継承 | fork セッション作成時に hook を再評価するよう CLI 側に期待(こちらでは制御不可)。観測記録のみ | 記録のみ |
+
+## 残課題・限界(追記分)
+
+- transcripts が ~1日でローテートするため、今後の再測は
+  `tool_call_state` 起点が必須。reasoning/THINK 分析は直近分しか不能。
+- 成功側の証拠は「coordinator 自己検証」ベース。作品の実品質は
+  ユーザー評価を経ていない(採点レビューは行われた)。
+- n=1 大規模Run・同一ジャンル(3D Webギャラリー)。パターンA〜Hの
+  再現性は次回Run以降で確認要。
+- トークンコストは DB に値なし。calls ベースの相対量のみ:
+  導入前 ~45 calls/h → 導入後 ~381 calls/h(**時間あたり ~8.4倍**。
+  ワーカー並列稼働による密度増)。

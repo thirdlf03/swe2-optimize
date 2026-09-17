@@ -33,6 +33,30 @@ step 単位の `prompt_tokens`/`cached_tokens` から「フルprefixキャッシ
 exec コマンドの分類集計（git / gh / test・lint・build / 探索系）、
 セッション時間、発言・推論の言語分布（日/英）。
 
+## hook_recheck.py
+
+`sessions.db` の `tool_call_state` を hook 判定ロジック
+（hooks/no_blind_sleep.py, hooks/no_shell_file_ops.py）で再分類し、
+「実行まで至った違反」と「ブロックされた未遂」を分離して
+era(pre/post)×役割(interactive/coordinator/worker)別に集計する。
+
+**transcripts は ~100件でローテートされる**ため、導入前後の再測は
+こちらが主経路。`tool_call_update_json` の `Tool rejected` で
+ブロック済み未遂を識別する（transcript の tool_calls には未遂も
+含まれるため、そのまま数えると「違反が実行された」ように見える罠がある）。
+
+```bash
+python3 tools/hook_recheck.py              # era境界=hooks/最古mtime
+python3 tools/hook_recheck.py 1789570440   # era境界をエポック秒で指定
+```
+
+## _common.py
+
+共有ローダー。`json.loads(bytes)` でテキスト decode 層を省き、
+fork Pool (8 workers) でファイル単位の parse+集計を並列化する
+（fork 非対応環境では逐次フォールバック）。新しい集計スクリプトを
+追加するときは `transcript_paths` / `load_json` / `parallel_map` を使う。
+
 ## 使い方
 
 ```bash
