@@ -33,11 +33,23 @@ step 単位の `prompt_tokens`/`cached_tokens` から「フルprefixキャッシ
 exec コマンドの分類集計（git / gh / test・lint・build / 探索系）、
 セッション時間、発言・推論の言語分布（日/英）。
 
+## analyze_remote_ops.py
+
+全 transcripts を走査し以下をセッション別に出力:
+
+- `sleep N` 呼出と累計秒数
+- `hooks/no_shell_file_ops.py` の `classify()` を適用した file-ops 検出
+  （hook 未導入環境の「導入されていたらブロックされた」行動を測る）
+- リモート書き込み系コマンド（`git push` / `gh` 書き込み / `gh api` 変異）を
+  直前ユーザー発言とセットで列挙 — 承認有無の目視確認用
+
 ## 使い方
 
 ```bash
 python3 tools/aggregate.py    # digests を /tmp/swe2_analysis/digests に生成
 python3 tools/aggregate2.py   # コマンド分類・言語分布をstdoutに出力
+python3 tools/cache_miss.py   # prefixキャッシュ全滅イベントの集計
+python3 tools/analyze_remote_ops.py  # sleep/file-ops/リモート書き込みの列挙
 ```
 
 ## 注意

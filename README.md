@@ -26,6 +26,9 @@ tools/   セッション分析用スクリプト（transcripts → digest集計�
 | SWE-2の行動特性（強み/弱みの基礎データ） | [docs/swe2-characteristics.md](docs/swe2-characteristics.md) + [tier別詳細](docs/swe2-characteristics/) | —（基礎データ。サブエージェントプロファイル使い分けは試行のうえ廃止 2026-09-16） |
 | コンテキストコスト（prefixキャッシュ全滅152回・10.4M tok再処理） | [docs/context-cost.md](docs/context-cost.md) | [tools/cache_miss.py](tools/cache_miss.py)（計測）＋エージェント側緩和策をdocに記載 |
 | 専用ツールのバイパス（execの49%がshell経由ファイル操作。ルール注入済みでもgrep 4.7倍・find 40倍） | [docs/shell-file-ops.md](docs/shell-file-ops.md) | [hooks/no_shell_file_ops.py](hooks/no_shell_file_ops.py) |
+| リモート書き込みの無承認実行（検証依頼のつもりが `gh pr review` 無断投稿。承認済みでも条件判断ミスで revert+通知スパム） | [docs/remote-write-approval.md](docs/remote-write-approval.md) | [hooks/remote_write_gate.py](hooks/remote_write_gate.py) + [bin/remote-write-approved](bin/remote-write-approved) |
+| 確信度の高い誤初回回答（5/13セッションでユーザーが事実・スコープ訂正。質問への捏造混入を含む） | [docs/confident-answers.md](docs/confident-answers.md) | —（機械的防止なし。緩和策のみ記載） |
+| バックグラウンドサブエージェントがユーザー発言でキャンセル（`Canceled by user`、27分の実行中断） | [docs/subagent-cancel.md](docs/subagent-cancel.md) | —（worktree隔離＋resume定型の運用策のみ） |
 
 ## tools/
 

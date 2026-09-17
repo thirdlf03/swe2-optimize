@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Issue a short-lived approval token for remote-write commands.
+
+Usage (AFTER the user has explicitly approved the remote write):
+  remote-write-approved git-push gh-pr     # scoped approval
+  remote-write-approved all                # any remote write
+
+Writes ~/.local/state/devin/remote-write-approval.json (valid 10 min) and
+appends an audit line to remote-write-approvals.log.
+"""
+import json
+import os
+import sys
+import time
+
+STATE_DIR = os.path.expanduser("~/.local/state/devin")
+TOKEN_PATH = os.path.join(STATE_DIR, "remote-write-approval.json")
+LOG_PATH = os.path.join(STATE_DIR, "remote-write-approvals.log")
+TTL = 600
+
+KNOWN = {
+    "git-push", "gh-pr", "gh-issue", "gh-release", "gh-repo", "gh-gist",
+    "gh-label", "gh-project", "gh-run", "gh-config", "gh-api",
+    "publish", "deploy", "all",
+}
+
+
+def main():
+    scopes = [a for a in sys.argv[1:] if a in KNOWN]
+    unknown = [a for a in sys.argv[1:] if a not in KNOWN]
+    if unknown:
+        print(f"unknown scope(s): {', '.join(unknown)}", file=sys.stderr)
+        print("known: " + " ".join(sorted(KNOWN)), file=sys.stderr)
+        sys.exit(1)
+    if not scopes:
+        scopes = ["all"]
+
+    os.makedirs(STATE_DIR, exist_ok=True)
+    now = time.time()
+    with open(TOKEN_PATH, "w") as f:
+        json.dump({"ts": now, "scopes": scopes, "ttl": TTL}, f)
+    with open(LOG_PATH, "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} cwd={os.getcwd()} scopes={','.join(scopes)}\n")
+
+    print(f"remote-write approval recorded: scopes={','.join(scopes)} valid for {TTL//60} min")
+    print("(issue this ONLY after the user explicitly approves the remote write)")
+
+
+main()
